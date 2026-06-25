@@ -1,0 +1,4 @@
+# SwiftLint configuration for swift-memory-allocation-primitives
+# Inherits from the shared parent configuration in swift-primitives
+
+parent_config: https://raw.githubusercontent.com/swift-primitives/.github/main/.swiftlint.yml

@@ -9,14 +9,11 @@
 //
 // ===----------------------------------------------------------------------===//
 
-public import Memory_Address_Primitives
-public import Memory_Allocation_Primitive
+import Memory_Allocator_Primitive
 public import Memory_Primitive
 
-extension Memory.Allocator.Arena where Resource: ~Copyable {
-    /// The arena's typed errors — raised when a bump request cannot be satisfied.
-    public enum Error: Swift.Error, Equatable, Sendable {
-        /// Insufficient space in arena.
-        case insufficientCapacity(requested: Memory.Address.Count, available: Memory.Address.Count)
-    }
-}
+/// The ONE generic conformance: the canonical model realizes the capability for every
+/// `Resource`. The quantifier is REAL — only heap CONSTRUCTION pins
+/// (`init(slotSize:slotAlignment:capacity:)`); every operation is already
+/// Resource-generic, so the members witness as-is (zero relocation, additive-only).
+extension Memory.Allocator.Pool: Memory.Pool.`Protocol` where Resource: ~Copyable {}

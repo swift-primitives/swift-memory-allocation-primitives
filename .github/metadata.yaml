@@ -1,0 +1,9 @@
+# .github/metadata.yaml
+description: "Memory.Allocator — allocators that carve a memory region (heap or inline) into slots: a passthrough System allocator, a bump Arena, and an O(1) fixed-size Pool."
+topics:
+  - primitives
+  - memory
+  - allocator
+homepage: "https://swift-institute.org"
+readme:
+  family: E

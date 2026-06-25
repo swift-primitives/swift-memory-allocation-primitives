@@ -9,45 +9,39 @@
 //
 // ===----------------------------------------------------------------------===//
 
-extension Memory.Allocator {
-    /// A bump allocator for batch allocations over a heap byte region.
+public import Memory_Address_Primitives
+public import Memory_Alignment_Primitives
+public import Memory_Allocation_Primitive
+public import Memory_Allocator_Primitive
+public import Memory_Primitive
+public import Memory_Primitives_Standard_Library_Integration
+public import Memory_Region_Primitives
+
+// The Arena product is DECLARED here, from the Arena module, via a `where Resource: ~Copyable`
+// extension on the generic `Memory.Allocator` (the cross-module nested-product mechanic — the
+// explicit `where Resource: ~Copyable` keeps `Resource` non-`Copyable`; 6.3.2 mechanic #1).
+
+extension Memory.Allocator where Resource: ~Copyable {
+    /// A bump allocator over an element-free `Resource` region.
     ///
-    /// Arena allocation provides:
-    /// - O(1) allocation (bump pointer)
-    /// - No individual deallocation overhead
-    /// - Single bulk deallocation via `reset()`
-    ///
-    /// ## Backed by a stable, out-of-line region
-    ///
-    /// The arena holds a `Memory.Contiguous<Byte>` — a **stable, out-of-line**
-    /// self-owning heap region — and bumps a `cursor` within its base address.
-    /// Because the region is out of line and its base is stable, the addresses
-    /// `allocate` vends *escape* soundly: they survive the arena value's moves.
-    /// Build one via `Memory.Allocator.arena(byteCapacity:)`.
-    ///
-    /// The arena **owns** `backing`; the region frees itself on its own `deinit`,
-    /// so the arena needs none.
-    ///
-    /// ## Invariants
-    ///
-    /// - `cursor` never exceeds the region's byte count
-    // SAFETY: Encapsulates unsafe internals behind a safe API; see
-    // SAFETY: [MEM-SAFE-024] for the absorber-pattern taxonomy.
-    @safe
+    /// Re-parameterization of the shipping `Memory.Allocator.Arena` (over a concrete
+    /// `Memory.Heap`): the backing becomes the generic `Resource` region, read through the
+    /// `Memory.Region` seam (`backing.base` / `backing.capacity`). O(1) bump allocation; no
+    /// individual deallocation; bulk reclaim via `reset()` or the region's own `deinit`. Because the
+    /// region is out-of-line with a stable base, vended addresses escape soundly.
     public struct Arena: ~Copyable {
-        /// The backing region. The arena owns it; it frees on its own `deinit`.
-        @usableFromInline
-        internal var backing: Memory.Contiguous<Byte>
+
+        /// The backing region.
+        ///
+        /// The arena owns it; it frees on its own `deinit`.
+        @usableFromInline internal var backing: Resource
 
         /// Bytes currently bumped from the region's base.
-        @usableFromInline
-        internal var cursor: Memory.Address.Count
+        @usableFromInline internal var cursor: Memory.Address.Count
 
         /// Creates an arena over an existing backing region.
-        ///
-        /// - Parameter backing: A stable, out-of-line heap byte region to bump within.
         @inlinable
-        public init(_ backing: consuming Memory.Contiguous<Byte>) {
+        public init(_ backing: consuming Resource) {
             self.backing = backing
             self.cursor = .zero
         }
@@ -56,21 +50,14 @@ extension Memory.Allocator {
 
 // MARK: - Properties
 
-extension Memory.Allocator.Arena {
-    /// The start address of the arena's backing region.
+extension Memory.Allocator.Arena where Resource: ~Copyable {
+    /// The start address of the arena's backing region (the Region seam — no raw pointer here).
     @inlinable
-    public var start: Memory.Address {
-        // SAFETY: `unsafeBaseAddress` is valid for the lifetime of `backing`,
-        // SAFETY: which the arena owns; the integer-address model carries no
-        // SAFETY: provenance. See [MEM-SAFE-025a].
-        unsafe Memory.Address(backing.unsafeBaseAddress)
-    }
+    public var start: Memory.Address { backing.base }
 
-    /// The total capacity in bytes.
-    ///
-    /// `Byte` has stride 1, so the region's byte count equals its element count.
+    /// The total capacity in bytes (the Region seam).
     @inlinable
-    public var capacity: Memory.Address.Count { Memory.Address.Count(UInt(backing.count)) }
+    public var capacity: Memory.Address.Count { backing.capacity }
 
     /// The number of bytes currently allocated.
     @inlinable
@@ -85,99 +72,16 @@ extension Memory.Allocator.Arena {
 
 // MARK: - Operations
 
-extension Memory.Allocator.Arena {
+extension Memory.Allocator.Arena where Resource: ~Copyable {
     /// Resets the arena, invalidating all previous allocations.
-    ///
-    /// - Warning: All addresses from this arena become invalid.
     @inlinable
     public mutating func reset() {
         cursor = .zero
     }
-
-    /// Allocates memory from the arena (the ``Memory/Allocator/Protocol`` seam).
-    ///
-    /// - Parameters:
-    ///   - count: Number of bytes to allocate.
-    ///   - alignment: Required alignment (power of 2).
-    /// - Returns: Address to allocated memory.
-    /// - Throws: ``Memory/Allocator/Arena/Error/insufficientCapacity(requested:available:)`` where
-    ///   the bump pointer would overflow the arena — the typed-error edge of the former `Optional`
-    ///   return.
-    @inlinable
-    public mutating func allocate(
-        count: Memory.Address.Count,
-        alignment: Memory.Alignment
-    ) throws(Memory.Allocator.Arena.Error) -> Memory.Address {
-        let capacity = self.capacity
-
-        // Round up the cursor to the alignment boundary.
-        let alignedCursor = alignment.align.up(cursor)
-
-        // Check if allocation fits (overflow-safe).
-        guard let endCursor = try? alignedCursor.add.exact(count),
-            endCursor <= capacity
-        else {
-            throw .insufficientCapacity(
-                requested: count,
-                available: (try? capacity.subtract.exact(alignedCursor)) ?? .zero
-            )
-        }
-
-        // Update the cursor.
-        cursor = endCursor
-
-        // Return the allocated address: base advanced by the aligned cursor.
-        // SAFETY: `alignedCursor <= capacity`, the region's byte count, so the
-        // SAFETY: advanced pointer stays within the owned region; the region is
-        // SAFETY: out-of-line and stable, so the address escapes soundly.
-        // SAFETY: See [MEM-SAFE-025a].
-        return unsafe Memory.Address(
-            start.mutablePointer.advanced(
-                by: Memory.Address.Offset(alignedCursor)
-            )
-        )
-    }
-
-    /// Deallocates previously-allocated memory — a **no-op** for a bump allocator.
-    ///
-    /// `Memory.Allocator.Arena` reclaims storage only en masse via ``reset()`` (or the backing
-    /// region's `deinit`); individual deallocation is not part of its discipline. The
-    /// ``Memory/Allocator/Protocol`` requirement is satisfied trivially so the arena composes as a
-    /// `Memory.Allocator`.
-    @inlinable
-    public mutating func deallocate(
-        _ address: Memory.Address,
-        count: Memory.Address.Count,
-        alignment: Memory.Alignment
-    ) {
-        // Bump allocator: no per-allocation free; storage is reclaimed by `reset()` / region `deinit`.
-    }
 }
-
-// MARK: - Memory.Allocator.Protocol
-
-/// `Memory.Allocator.Arena` is a bump `Memory.Allocator` — it vends aligned addresses out of a
-/// stable, out-of-line backing region and reclaims them en masse. Conforming the canonical allocator
-/// seam (`allocate(count:alignment:) throws -> Memory.Address` / `deallocate`) lets it stand wherever
-/// a `Memory.Allocator.\`Protocol\`` is required.
-extension Memory.Allocator.Arena: Memory.Allocator.`Protocol` {}
 
 // MARK: - Sendable
 
-/// Sendable conformance for `Memory.Allocator.Arena`.
-///
-/// ## Safety Invariant
-///
-/// `Memory.Allocator.Arena` is `struct ~Copyable` owning a `Memory.Contiguous<Byte>` region (which
-/// itself owns the out-of-line storage and frees it on `deinit`). The encapsulation invariant is
-/// asserted by the adjacent `// SAFETY:` comment per [MEM-SAFE-025a]; the `@safe` attribute is
-/// forbidden in `Sources/` per [MEM-SAFE-025b]. Unique ownership guarantees at most one thread
-/// accesses the bump cursor at any time; cross-thread transfer via move relinquishes the sender's
-/// access.
-///
-/// ## Non-Goals
-///
-/// - Not a shared allocator — arena is single-owner by construction.
-/// - Addresses returned by `allocate(count:alignment:)` are not themselves Sendable independently of
-///   the arena.
-extension Memory.Allocator.Arena: @unsafe @unchecked Sendable {}
+/// Move-only owning absorber over a `Resource` region; unique ownership means cross-thread transfer
+/// is a move that relinquishes the sender's access.
+extension Memory.Allocator.Arena: @unchecked Sendable where Resource: ~Copyable & Sendable {}

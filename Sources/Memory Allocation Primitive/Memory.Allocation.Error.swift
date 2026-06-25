@@ -28,9 +28,3 @@ extension Memory.Allocation.Error: CustomStringConvertible {
         }
     }
 }
-
-// MARK: - Platform Bindings
-//
-// Per [PLAT-ARCH-008c], the platform-specific `init?(code:)` mapping lives in L2:
-// - POSIX: `swift-iso-9945` (`ISO 9945.Memory.Allocation.Error+code.swift`)
-// - Windows: `swift-windows-standard` (`Windows.Memory.Allocation.Error+code.swift`)
